@@ -214,7 +214,7 @@ const bgMotorbike = (c, rider, helmet = '#fff') => ({ w: 12, h: 7, svg: bgDot(8,
   + bgWheel(4, 11) + bgWheel(19, 11) });
 // 電動キックボード(立って乗る小さな乗り物。ロゴなどは入れない一般的な形)。accent = 板とヘルメットの色 / top = 上着の色
 const bgKickboard = (accent, top = '#f4efe4') => {
-  const skin = '#f8cdbb', dark = '#2e504a', pants = '#cfd3d6';
+  const skin = '#f8cdbb', dark = '#2e504a', pants = '#4e687c';
   const head = bgDot(8, 0, 5, 1, accent) + bgDot(7, 1, 7, 2, accent) + bgDot(7, 3, 4, 1, accent) + bgDot(11, 3, 3, 1, skin) + bgDot(12, 3, 1, 1, dark) + bgDot(8, 4, 5, 1, skin) + bgDot(7, 4, 1, 1, '#3a3a4a');
   const body = bgDot(8, 5, 5, 5, top) + bgDot(8, 9, 5, 1, '#d9d4c7') + bgDot(12, 5, 4, 2, top) + bgDot(16, 5, 2, 2, skin)
     + bgDot(7, 10, 3, 4, pants) + bgDot(10, 10, 3, 4, pants) + bgDot(6, 14, 4, 1, '#fff') + bgDot(10, 14, 4, 1, '#fff');
