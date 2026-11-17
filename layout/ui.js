@@ -797,7 +797,11 @@ function renderInvestEvent() {
 
 // ----- 時間バーとHUD -----
 function renderTrack() {
-  $('track-marks').innerHTML = S.marks.map((m) => `<span class="marker marker-${m.kind}" style="left:${(m.day / CONFIG.totalDays * 100).toFixed(2)}%"></span>`).join('');
+  // 5年を超えた日付は、バーの右端(100%)に収める(はみ出してボタンと重ならないように)
+  $('track-marks').innerHTML = S.marks.map((m) => {
+    const pct = Math.min(100, m.day / CONFIG.totalDays * 100);
+    return `<span class="marker marker-${m.kind}" style="left:calc(${pct.toFixed(2)}% - ${pct >= 100 ? 3 : 0}px)"></span>`;
+  }).join('');
 }
 
 function updateLive() {
@@ -809,7 +813,7 @@ function updateLive() {
   $('h-level').textContent = `会社Lv.${S.level}`;
   const hName = $('h-name'); if (hName) hName.textContent = S.companyName || 'PEACE株式会社';
   $('h-date').textContent = dateLabel(S.day);
-  $('track-fill').style.width = (S.day / CONFIG.totalDays * 100) + '%';
+  $('track-fill').style.width = Math.min(100, S.day / CONFIG.totalDays * 100) + '%';
   const eventActive = S.pending || S.recruiting ;
   $('play-btn').textContent = eventActive ? 'イベント中' : S.playing && !S.pending ? '❚❚ 一時停止' : '▶ 再生';
   $('play-btn').disabled = eventActive;

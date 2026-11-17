@@ -207,10 +207,15 @@ button[data-key]::after {
 
 .years {
   display: flex;
-  justify-content: space-between;
   margin-top: 4px;
   color: var(--ink-sub);
   font-size: 11px;
+}
+
+/* 1年ぶんの幅(バーの20%)を等分して、ラベルを各区間の中央に置く */
+.years span {
+  flex: 1;
+  text-align: center;
 }
 
 /* ===== メイン ===== */
