@@ -12,6 +12,7 @@ let screenMode = 'title';  // 'title' | 'end' | null
 let resetArmed = false;
 let selectedDifficulty = 'normal'; // 難易度
 let companyName = '';   // 会社名(タイトル画面で入力)
+let debugEventSelecting = false;
 const esc = (t) => String(t).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 // ----- 部品 -----
@@ -28,7 +29,11 @@ const seg = (cur, max, cells) => {
   return '<div class="seg">' + Array.from({ length: cells }, (_, i) => `<span class="${i < on ? 'on' : ''}"></span>`).join('') + '</div>';
 };
 const leftText = (job) => { const l = remainDays(job); return l >= 0 ? `残り${l}日` : `${-l}日遅れ`; };
-const progressPct = (job) => Math.min(100, Math.floor(job.progress / job.work * 100));
+const progressPct = (job) => {
+  if (job.work <= 0) return 0;
+  if (job.progress >= job.work) return 100;
+  return Math.min(99, Math.max(0, Math.floor(job.progress / job.work * 100)));
+};
 const employeeStats = (e) => Object.entries(EMPLOYEE_STAT_LABELS)
   .map(([key, label]) => `${label} ${e.stats?.[key] ?? 0}/100`).join(' / ');
 const employeeStatus = (e) => {
@@ -493,18 +498,22 @@ function renderHome() {
 function renderTimeline() {
   const timeline = $('event-timeline');
   const timelineScrollTop = timeline ? timeline.scrollTop : 0;
-  const entries = S.log.map((entry) => {
+  const kindLabels = { good: '達成', bad: '注意', warn: '警告' };
+  const entries = S.log.map((entry, index) => {
     const kind = entry.kind || 'info';
-    const kindLabel = kind === 'good' ? '達成' : kind === 'bad' ? '注意' : kind === 'warn' ? '警告' : '記録';
-    return `<li class="timeline-entry timeline-entry-${kind}">
-      <span class="timeline-date">${dateLabel(entry.day)}</span>
-      <span class="timeline-kind">${kindLabel}</span>
-      <span class="timeline-text">${entry.text}</span>
+    const d = dateOf(entry.day);
+    const dateText = `${Math.min(5, Math.floor(entry.day / 365) + 1)}年目 ${d.getMonth() + 1}/${d.getDate()}`;
+    const tagText = index === 0 ? 'NEW' : (kindLabels[kind] || '記録');
+    return `<li class="tl-item tl-${kind}">
+      <span class="tl-dot"></span>
+      <div class="tl-card${index === 0 ? ' tl-new' : ''}">
+        <div class="tl-date"><span>${dateText}</span><span class="tl-tag">${tagText}</span></div>
+        <div class="tl-text">${entry.text}</div>
+      </div>
     </li>`;
   }).join('');
-  $('timeline-container').innerHTML = `<div class="timeline-panel panel">
-    <div class="panel-title">会社の歩み</div>
-    <button class="timeline-latest" data-act="timeline-latest" title="最新の歩みに移動" aria-label="最新の歩みに移動">↑</button>
+  $('timeline-container').innerHTML = `<div class="timeline-panel">
+    <div class="tl-head"><b>会社の歩み</b><button class="timeline-latest" data-act="timeline-latest" title="最新の歩みに移動" aria-label="最新の歩みに移動">↑</button></div>
     <ol id="event-timeline" class="event-timeline">${entries || '<li class="timeline-empty">まだ記録がありません。</li>'}</ol>
   </div>`;
   $('event-timeline').scrollTop = timelineScrollTop;
@@ -592,17 +601,21 @@ function renderJobs() {
   const info = levelInfo();
   const list = S.offers.map(offerCard).join('') || '<div class="card muted">いまは募集がない。しばらく待とう。</div>';
   $('jobs-body').innerHTML = `<h2>案件を選ぶ <span class="muted small">同時進行 ${S.jobs.length}/${info.jobs}件</span></h2>
+    <p class="small muted legend">案件は会社Lvに応じて募集されます。低難易度を5件成功すると中難易度、中難易度を3件成功すると高難易度が解放されます（現在: 会社Lv.${S.level} / 低難易度成功 ${S.lowDifficultySuccesses}/5 / 中難易度成功 ${S.mediumDifficultySuccesses}/3）。</p>
     <p class="small muted legend">割り当てた社員のスキル別能力値の合計が要求値以上: 緑=達成 / 赤=未達。スキルが合わない社員は、半分の力で手伝う。</p>${list}`;
 }
 
 function offerCard(o) {
-  const locked = S.rep < o.minRep;
+  const unlockReason = projectUnlockReason(o);
+  const locked = S.rep < o.minRep || Boolean(unlockReason);
   const req = requirementSkills(o).map((sk) => skillTag(sk,
     meetsRequirement(o, sk, S.employees) ? 'ok' : 'ng'
   )).join('');
   const kind = o.diff >= 3 ? 'big' : o.skills.length <= 2 ? 'web' : 'sys';
-  const right = locked ? `<span class="offer-lock">評判${o.minRep}で解放</span>` : `<button class="act" data-act="accept" data-id="${o.id}">受注する</button>`;
-  return `<div class="offer offer-${kind} ${locked ? 'locked' : ''}">
+  const difficultyClass = `offer-diff-${Number(o.diff)}`;
+  const lockReason = unlockReason || `評判${o.minRep}で解放`;
+  const right = locked ? `<span class="offer-lock">${lockReason}</span>` : `<button class="act" data-act="accept" data-id="${o.id}">受注する</button>`;
+  return `<div class="offer offer-${kind} ${difficultyClass} ${locked ? 'locked' : ''}">
     <div class="offer-head"><strong>${o.name}</strong><span class="offer-tag">${o.diff >= 3 ? '大規模' : '案件'}</span></div>
     ${o.diff >= 3 ? '<div class="offer-big">★ 大規模案件 ★</div>' : ''}
     <div class="offer-row"><span class="muted small">難易度</span><span class="stars">${'★'.repeat(o.diff)}${'☆'.repeat(3 - o.diff)}</span><span class="small">${DIFF_LABEL[o.diff]}</span></div>
@@ -684,15 +697,16 @@ function renderRecruit() {
   const priorityRecruiting = S.recruitContractActive;
   const eventTitle = priorityRecruiting ? '優先採用イベント' : '採用イベント';
   if (S.recruitStage === 'confirm') {
-    $('recruit-body').innerHTML = `<h2>${eventTitle}</h2>
-      <div class="card">
-        <p>${priorityRecruiting ? `${SKILLS[S.recruitContractJobType]}の求職者が紹介されました。` : '新しい求職者が来ました。候補者を確認して、採用活動を行いますか?'}</p>
-        <p class="small muted">採用しない場合でも、あとで別の採用イベントが発生します。</p>
-        <div class="row gap-top">
-          <button class="btn-main" data-act="open-recruit">候補者を見る</button>
-          <button class="btn-small" data-act="finish-recruit">今回は見送る</button>
-        </div>
-      </div>`;
+    $('recruit-body').innerHTML = `<div class="card recruit-event">
+      <div class="modal-head"><span class="badge badge-high">${eventTitle}</span><span class="small muted">ゲーム一時停止中</span></div>
+      <h3>${eventTitle}</h3>
+      <p class="muted">${priorityRecruiting ? `${SKILLS[S.recruitContractJobType]}の求職者が紹介されました。` : '新しい求職者が来ました。候補者を確認して、採用活動を行いますか?'}</p>
+      <p class="small muted">採用する場合は候補者一覧から採用者を選択できます。</p>
+      <div class="choices">
+        <button class="choice has-letter" data-act="open-recruit"><span class="ch-letter">1</span><span class="ch-body"><strong>採用する</strong></span></button>
+        <button class="choice has-letter is-hide" data-act="finish-recruit"><span class="ch-letter">2</span><span class="ch-body"><strong>見送る</strong></span></button>
+      </div>
+    </div>`;
     return;
   }
   const slots = levelInfo().slots;
@@ -804,8 +818,10 @@ function updateLive() {
 
   S.jobs.forEach((job) => {
     const pct = progressPct(job), left = remainDays(job);
-    const bar = document.querySelector(`[data-bar="${job.id}"]`);
-    if (bar) { bar.style.width = pct + '%'; bar.classList.toggle('fill-warn', left <= 7); }
+    document.querySelectorAll(`[data-bar="${job.id}"]`).forEach((bar) => {
+      bar.style.width = pct + '%';
+      bar.classList.toggle('fill-warn', left <= 7);
+    });
     const p = document.querySelector(`[data-pct="${job.id}"]`);
     if (p) p.textContent = `進捗 ${pct}%`;
     const l = document.querySelector(`[data-left="${job.id}"]`);
@@ -904,9 +920,31 @@ function renderModal() {
   const p = S && S.pending;
   const body = $('modal-body');
   const showMission = S && S.missionsOpen && !p && screenMode === null;
-  $('modal').classList.toggle('hidden', (!p && !showMission) || screenMode !== null);
+  const showRecruitment = S && S.recruiting && S.recruitStage === 'confirm' && !p && screenMode === null;
+  const showDebugEvent = debugEventSelecting && S && !p && !S.recruiting && screenMode === null;
+  $('modal').classList.toggle('hidden', (!p && !showMission && !showRecruitment && !showDebugEvent) || screenMode !== null);
   if (showMission) {
     $('modal-body').innerHTML = `<div class="modal-head"><span class="badge badge-low">ミッション</span><button class="btn-small" data-act="toggle-missions">閉じる</button></div>${missionPanel()}`;
+    return;
+  }
+  if (showDebugEvent) {
+    const events = S.eventDatabase.filter((event) => event?.id && event?.name);
+    body.innerHTML = `<div class="modal-head"><span class="badge badge-low">デバッグ</span><button class="btn-small" data-act="close-debug-event">閉じる</button></div>
+      <h3>発生させるイベントを選択</h3>
+      <p class="small muted">F4で開くデバッグ画面です。</p>
+      ${events.map((event, index) => `<button class="choice" data-act="debug-select-event" data-id="${esc(event.id)}"><span class="ch-body"><strong>${index + 1}. ${esc(event.name)}</strong></span></button>`).join('')}`;
+    return;
+  }
+  if (showRecruitment) {
+    const priorityRecruiting = S.recruitContractActive;
+    const eventTitle = priorityRecruiting ? '優先採用イベント' : '採用イベント';
+    body.innerHTML = `<div class="inc-head"><span class="inc-title">⚠ ${eventTitle}が発生!</span><span class="small">ゲーム一時停止中</span></div>
+      <div class="inc-status"><h3>${eventTitle}</h3>
+        <p class="muted">${priorityRecruiting ? `${SKILLS[S.recruitContractJobType]}の求職者が紹介されました。` : '新しい求職者が来ました。候補者を確認して、採用活動を行いますか?'}</p>
+        <p class="small muted">採用する場合は候補者一覧から採用者を選択できます。</p>
+      </div>
+      <button class="choice has-letter" data-act="open-recruit"><span class="ch-letter">1</span><span class="ch-body"><strong>採用する</strong></span></button>
+      <button class="choice has-letter is-hide" data-act="finish-recruit"><span class="ch-letter">2</span><span class="ch-body"><strong>見送る</strong></span></button>`;
     return;
   }
   if (S.recruitSelectingJob) {
@@ -1091,6 +1129,32 @@ function restart() {
   render();
   showTitle();
 }
+S
+
+
+
+
+
+//デバッグ用コード(完成後コメントアウト)
+///////////////////////////////////////////////////////////////////////////
+// DEBUG EVENT HOTKEY: remove this function to remove debugging.
+function debugEventPrompt() {
+  if (!['localhost', '127.0.0.1'].includes(location.hostname)) return;
+  if (screenMode !== null || S.pending || S.recruiting) return;
+  if (!S.eventDatabase.some((event) => event?.id && event?.name)) {
+    toast('イベントデータがありません', 'bad');
+    return;
+  }
+  debugEventSelecting = true;
+  renderModal();
+}
+/////////////////////////////////////////////////////////////////////////
+
+
+
+
+
+
 
 // ----- 時間を進める -----
 function loop() {
@@ -1109,7 +1173,6 @@ function afterTick() {
       S.pending = null;
     }
     S.playing = false;
-    showPage('recruit');
   }
   if (S.dirty) render(); else updateLive();
 }
@@ -1207,7 +1270,7 @@ document.addEventListener('click', (ev) => {
   }
   else if (a === 'finish-assignment') { S.assignmentJobId = null; showPage('home', true); render(); }
   else if (a === 'hire') { done(hire(Number(el.dataset.id))); }
-  else if (a === 'open-recruit') { S.recruitStage = 'candidates'; render(); }
+  else if (a === 'open-recruit') { S.recruitStage = 'candidates'; showPage('recruit', true); render(); }
   else if (a === 'open-staff') { S.recruitStage = 'staff'; render(); }
   else if (a === 'back-recruit') { S.recruitStage = 'candidates'; render(); }
   else if (a === 'finish-recruit') {
@@ -1233,6 +1296,20 @@ document.addEventListener('click', (ev) => {
   else if (a === 'finish-invest') {
     showPage('home', true);
     render();
+  }
+  else if (a === 'debug-select-event') {
+    debugEventSelecting = false;
+    if (!triggerDebugEvent(el.dataset.id)) {
+      toast('イベントを発生できません', 'bad');
+      render();
+      return;
+    }
+    showPage('home', true);
+    render();
+  }
+  else if (a === 'close-debug-event') {
+    debugEventSelecting = false;
+    renderModal();
   }
   else if (a === 'choice') { onChoice(Number(el.dataset.i)); }
   else if (a === 'continue') { nextPending(); }
@@ -1299,6 +1376,12 @@ document.addEventListener('input', (ev) => {
 
 // ----- キーボード操作 -----
 document.addEventListener('keydown', (ev) => {
+  // DEBUG EVENT HOTKEY: remove this block and debugEventPrompt to remove debugging.
+  if (ev.code === 'F4') {
+    ev.preventDefault();
+    debugEventPrompt();
+    return;
+  }
   const activeTag = document.activeElement?.tagName;
   if (
     activeTag === 'INPUT' ||
@@ -1306,6 +1389,18 @@ document.addEventListener('keydown', (ev) => {
     activeTag === 'SELECT'
   ) {
     return;
+  }
+  if (S?.recruiting && S.recruitStage === 'confirm') {
+    if (ev.code === 'Digit1') {
+      ev.preventDefault();
+      document.querySelector('[data-act="open-recruit"]')?.click();
+      return;
+    }
+    if (ev.code === 'Digit2') {
+      ev.preventDefault();
+      document.querySelector('[data-act="finish-recruit"]')?.click();
+      return;
+    }
   }
   if (S?.pending && stage === 1 && Array.isArray(S.pending.choices)) {
     const choiceIndex = {
