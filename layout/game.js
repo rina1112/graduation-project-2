@@ -65,11 +65,64 @@ function meetsRequirement(job, skill, employees) {
 }
 const remainDays = (job) => job.deadline - S.day;
 const monthlyCost = () => S.employees.reduce((s, e) => s + e.salary, 0) + CONFIG.officeCost;
+const averageEmployeeSatisfaction = () => S.employees.length
+  ? Math.round(S.employees.reduce((total, e) => total + e.satisfaction, 0) / S.employees.length)
+  : 0;
 const newId = () => S.nextId++;
 const addMoney = (n) => { S.money += n; };
 const addRep = (n) => { S.rep = Math.max(0, S.rep + n); };
 const addProgress = (job, frac) => { job.progress = clamp(job.progress + frac * job.work, 0, job.work * 0.99); };
 const schedule = (afterDays, type, data) => { S.schedule.push(Object.assign({ day: S.day + afterDays, type }, data)); };
+
+function adjustEmployeeSatisfaction(amount) {
+  S.employees.forEach((e) => {
+    e.satisfaction = clamp(e.satisfaction + amount, 0, 100);
+  });
+  if (S.employees.length) S.dirty = true;
+}
+
+function resignEmployee(employee) {
+  const current = empById(employee.id);
+  if (!current) return false;
+  unassign(current);
+  S.employees = S.employees.filter((e) => e.id !== current.id);
+  const message = `${current.name}は社員満足度の低下により退職した`;
+  log(message, 'warn');
+  notify(message, 'warn');
+  S.dirty = true;
+  return true;
+}
+
+function employeeResignationChance(employee) {
+  const satisfaction = clamp(Number(employee.satisfaction) || 0, 0, 100);
+  if (satisfaction >= EMPLOYEE_RESIGN_THRESHOLD) return 0;
+  return clamp(
+    (EMPLOYEE_RESIGN_THRESHOLD - satisfaction) * 0.01 + (Number(employee.retirementRisk) || 0) / 100,
+    0,
+    1
+  );
+}
+
+function updateEmployeeSatisfaction() {
+  const salaryPaid = S.money >= 0;
+  let changed = false;
+  const resignationCandidates = [];
+  S.employees.slice().forEach((e) => {
+    const job = e.job ? jobById(e.job) : null;
+    const activeWork = e.job || (e.sales && S.day >= e.salesCooldownUntil);
+    const workloadChange = job?.late ? -5 : activeWork ? -2 : !isAbsent(e) ? 1 : 0;
+    const previous = e.satisfaction;
+    e.satisfaction = clamp(e.satisfaction + (salaryPaid ? 1 : 0) + workloadChange, 0, 100);
+    if (e.satisfaction !== previous) changed = true;
+
+    const resignationChance = employeeResignationChance(e);
+    if (resignationChance > 0 && rand() < resignationChance) {
+      resignationCandidates.push(e);
+    }
+  });
+  if (changed) S.dirty = true;
+  return resignationCandidates.length ? pick(resignationCandidates) : null;
+}
 
 function dateOf(day) { return new Date(CONFIG.startYear, CONFIG.startMonth, 1 + day); }
 function dateLabel(day) {
@@ -113,7 +166,8 @@ function newGame(
     counts: { accepted: 0, hired: 0, handled: 0 },
     missionRewards: {},
     nextId: 1, playing: false, speedIdx: CONFIG.defaultSpeed, missionsOpen: false, missionUnlockNotices: {},
-    employeeView: 'staff', employeeDatabase, eventDatabase, projectDatabase, missionDatabase
+    employeeView: 'staff', employeeFiringArmed: null,
+    employeeDatabase, eventDatabase, projectDatabase, missionDatabase
   };
   MISSIONS = missionDatabase.map((mission) => ({
     ...mission,
@@ -196,6 +250,8 @@ function addEmployee(name, skill, salesSkill, stats, sourceId, salary, sales) {
   const e = {
     id: newId(), sourceId, name, skill, salary: salary ?? SALARY[1], job: null, sales: Boolean(sales),
     salesSkill: salesSkill ?? DEFAULT_SALES_SKILL, salesCooldownUntil: 0,
+    satisfaction: EMPLOYEE_START_SATISFACTION,
+    retirementRisk: 0,
     stats: Object.fromEntries(Object.keys(DEFAULT_EMPLOYEE_STATS).map((key) => [
       key, clamp(Number(rawStats[key]) || 0, 0, 100)
     ])),
@@ -310,6 +366,31 @@ function toggleSales(empId) {
     e.sales = true;
   }
   S.dirty = true;
+}
+
+function fireEmployee(empId) {
+  const employee = empById(empId);
+  if (!employee) return { ok: false, msg: '社員が見つかりません' };
+  if (S.employees.length <= 1) return { ok: false, msg: '社員が一人以下になるため解雇できません' };
+  if (S.pending || S.recruiting) return { ok: false, msg: 'イベント中は社員を解雇できません' };
+
+  const severance = employee.salary * EMPLOYEE_SEVERANCE_MONTHS;
+  if (S.money < severance) {
+    return { ok: false, msg: `退職金が不足しています。必要資金は${yen(severance)}です` };
+  }
+
+  unassign(employee);
+  S.employees = S.employees.filter((e) => e.id !== empId);
+  addMoney(-severance);
+  addRep(-EMPLOYEE_FIRE_REPUTATION_PENALTY);
+  if (S.employeeFiringArmed === empId) S.employeeFiringArmed = null;
+  S.dirty = true;
+
+  const message = `${employee.name}を解雇しました（退職金 ${yen(severance)}・評判 -${EMPLOYEE_FIRE_REPUTATION_PENALTY}）`;
+  log(message, 'bad');
+  notify(message, 'bad');
+  checkMissionRewards();
+  return { ok: true, msg: message };
 }
 
 function salesSuccessRate(salesSkill) {
@@ -511,8 +592,12 @@ function jobPower(job) {
   job.staff.forEach((id) => {
     const e = empById(id);
     if (!e || !isWorking(e)) return;
+    const satisfaction = clamp(Number(e.satisfaction) || 0, 0, 100);
+    const satisfactionMultiplier = satisfaction >= EMPLOYEE_LOW_SATISFACTION_THRESHOLD
+      ? 1
+      : 0.7 + satisfaction / 200;
     if (!job.skills.includes(e.skill)) {
-      p += 0.5;
+      p += 0.5 * satisfactionMultiplier;
       return;
     }
     const statKey = EMPLOYEE_SPECIALTY_STATS[e.skill];
@@ -520,7 +605,7 @@ function jobPower(job) {
     const basePower = 0.5 + stat / 100;
     const required = Number(job.requirements?.[e.skill]) || 0;
     const abilityShortage = required > 0 && abilityTotal(staff, e.skill) < required;
-    p += basePower * (abilityShortage ? 0.7 : 1);
+    p += basePower * (abilityShortage ? 0.7 : 1) * satisfactionMultiplier;
   });
   if (S.boost[job.id] && S.day < S.boost[job.id]) p *= 1.4;
   return p;
@@ -530,6 +615,7 @@ function tick() {
   if (!S || S.over || S.pending) return;
   S.day++;
   const date = dateOf(S.day);
+  let resignationCandidate = null;
 
   S.employees.forEach((e) => {
     if (isAbsent(e) && e.job) {
@@ -560,7 +646,24 @@ function tick() {
     const c = monthlyCost();
     S.money -= c;
     log(`給料と運営費 ${yen(c)} を支払った`);
+    resignationCandidate = updateEmployeeSatisfaction();
     runSales();
+  }
+
+  if (resignationCandidate) {
+    const resignationEvent = S.eventDatabase.find(isResignationEvent);
+    if (resignationEvent) {
+      const job = resignationCandidate.job ? jobById(resignationCandidate.job) : null;
+      const eventPrompt = buildDatabaseEvent(resignationEvent, job, resignationCandidate);
+      if (eventPrompt) {
+        raise(eventPrompt);
+        S.marks.push({ day: S.day, kind: 'incident' });
+      } else {
+        resignEmployee(resignationCandidate);
+      }
+    } else {
+      resignEmployee(resignationCandidate);
+    }
   }
 
   // 案件の募集と求職者
@@ -599,11 +702,16 @@ function makeIncident(forceId) {
     ? S.eventDatabase.find((item) => String(item.id) === String(forceId))
     : pickWeighted(
       S.eventDatabase.filter((item) => (
-        S.employees.length < levelInfo().slots || !eventRequiresRecruitment(item)
+        !isResignationEvent(item) &&
+        (S.employees.length < levelInfo().slots || !eventRequiresRecruitment(item))
       )),
       (item) => item.occurrenceRate
     );
   return event ? buildDatabaseEvent(event, job) : null;
+}
+
+function isResignationEvent(event) {
+  return event?.name === '社員の退職希望';
 }
 
 function eventRequiresRecruitment(event) {
@@ -631,8 +739,9 @@ function pickWeighted(items, weightOf) {
   return items[index] || null;
 }
 
-function applyDatabaseEventEffects(effects, job) {
+function applyDatabaseEventEffects(effects, job, targetEmployee) {
   const applied = [];
+  const employee = targetEmployee ? empById(targetEmployee.id) : null;
   const money = Number(effects?.money || 0) + Number(effects?.sales || 0) + Number(effects?.profit || 0);
   if (money) {
     addMoney(money);
@@ -642,6 +751,25 @@ function applyDatabaseEventEffects(effects, job) {
   if (reputation) {
     addRep(reputation);
     applied.push(`評判 ${reputation >= 0 ? '+' : ''}${reputation}`);
+    adjustEmployeeSatisfaction(Math.sign(reputation) * 3);
+    applied.push(`社員満足度 ${reputation > 0 ? '+3' : '-3'}`);
+  }
+  const morale = Number(effects?.morale || 0);
+  if (morale) {
+    if (employee) {
+      employee.satisfaction = clamp(employee.satisfaction + morale, 0, 100);
+      S.dirty = true;
+      applied.push(`${employee.name}の満足度 ${morale >= 0 ? '+' : ''}${morale}`);
+    } else {
+      adjustEmployeeSatisfaction(morale);
+      applied.push(`社員満足度 ${morale >= 0 ? '+' : ''}${morale}`);
+    }
+  }
+  const retirementRisk = Number(effects?.retirement_risk || 0);
+  if (retirementRisk && employee) {
+    employee.retirementRisk = clamp((Number(employee.retirementRisk) || 0) + retirementRisk, -100, 100);
+    S.dirty = true;
+    applied.push(`${employee.name}の退職リスク ${retirementRisk >= 0 ? '+' : ''}${retirementRisk}%`);
   }
   const workload = Number(effects?.workload || 0);
   if (job && workload) {
@@ -656,15 +784,18 @@ function applyDatabaseEventEffects(effects, job) {
   return applied;
 }
 
-function buildDatabaseEvent(event, job) {
+function buildDatabaseEvent(event, job, resignationEmployee) {
   const choices = (event.choices || []).filter((choice) => choice?.label);
   if (!choices.length) return null;
+  const resignationDetails = resignationEmployee
+    ? ` ${resignationEmployee.name}（社員満足度 ${resignationEmployee.satisfaction}/100）から退職の相談があった。`
+    : '';
   return {
     kind: 'incident',
     id: `database-event-${event.id}`,
     badge: event.type === 'incident' ? 'インシデント' : '会社イベント',
     title: event.name,
-    body: `${event.description}${event.triggerCondition ? `（発生条件: ${event.triggerCondition}）` : ''}`,
+    body: `${event.description}${event.triggerCondition ? `（発生条件: ${event.triggerCondition}）` : ''}${resignationDetails}`,
     choices: choices.map((choice) => ({
       label: choice.label,
       tag: 'other',
@@ -685,7 +816,13 @@ function buildDatabaseEvent(event, job) {
           if (!employee) return `${choice.label}。採用枠または採用可能な社員がいないため、採用できませんでした。`;
           recruited.push(employee);
         }
-        const applied = applyDatabaseEventEffects(effects, job);
+        const applied = applyDatabaseEventEffects(effects, job, resignationEmployee);
+        const target = resignationEmployee ? empById(resignationEmployee.id) : null;
+        const resignationChance = target ? employeeResignationChance(target) : 0;
+        if (resignationChance > 0 && rand() < resignationChance) {
+          resignEmployee(target);
+          applied.push(`${target.name}が退職`);
+        }
         recruited.forEach((employee) => applied.push(`${employee.name}を採用`));
         return applied.length ? `${choice.label}。${applied.join('、')}。` : `${choice.label}。`;
       }
@@ -789,9 +926,10 @@ const goalsMet = () => goalList().every((x) => x.met);
 // ----- クリア評価 -----
 function getClearRank() {
   const years = S.day / 365;
-  if (years < 5) return 'A';
-  if (years < 6) return 'B';
-  if (years < 8) return 'C';
+  if (years < 1) return 'S';
+  if (years < 2) return 'A';
+  if (years < 3) return 'B';
+  if (years < 4) return 'C';
   return 'D';
 }
 function checkEnd() {
@@ -802,8 +940,8 @@ function checkEnd() {
   else if (goalsMet()) {
     S.over = { type: 'clear' };
   }
-  else if (S.day >= 365 * 15) {
-    S.over = { type: 'retire' };
+  else if (S.day >= CONFIG.totalDays) {
+    S.over = { type: 'timeout' };
   }
   if (S.over) S.over.day = S.day;
 }

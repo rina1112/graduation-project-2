@@ -47,6 +47,14 @@ const employeeStatusMarkup = (e) => {
   const away = isAbsent(e);
   return `<div class="employee-status ${away ? 'employee-status-away' : ''}"${away ? ` data-employee-away="${e.absentUntil}"` : ''}>${employeeStatus(e)}</div>`;
 };
+const employeeSatisfactionMarkup = (e) => {
+  const satisfaction = clamp(Number(e.satisfaction) || 0, 0, 100);
+  const level = satisfaction < EMPLOYEE_RESIGN_THRESHOLD ? 'low' : satisfaction < EMPLOYEE_LOW_SATISFACTION_THRESHOLD ? 'warn' : 'good';
+  return `<div class="employee-satisfaction">
+    <div class="employee-satisfaction-row"><span>社員満足度</span><strong class="satisfaction-${level}">${satisfaction}/100</strong></div>
+    <div class="satisfaction-bar"><span class="satisfaction-${level}" style="width:${satisfaction}%"></span></div>
+  </div>`;
+};
 const requirementSkills = (job) => ['design', 'dev', 'security', 'infra']
   .filter((skill) => Number(job.requirements?.[skill]) > 0);
 const requirementText = (job) => requirementSkills(job)
@@ -472,7 +480,7 @@ function renderTown() {
   if (S.money < monthlyCost() * 1.5) alerts.push('<div class="alert"><span>資金が少なくなっている。このままだと、来月の給料が払えなくなる。</span></div>');
   S.jobs.filter((j) => j.late).forEach((j) => alerts.push(`<div class="alert"><span>「${j.name}」が納期を過ぎている。早く完成させよう。</span></div>`));
   const projects = S.jobs.length ? S.jobs.map((j) => `<div class="town-job"><div class="row"><strong class="small">${j.name}</strong><span class="small ${remainDays(j) <= 7 ? 'neg' : 'muted'}" data-left="${j.id}">${leftText(j)}</span></div><div class="bar"><div class="fill" data-bar="${j.id}" style="width:${progressPct(j)}%"></div></div></div>`).join('') : '<div class="small muted">進行中の案件はない。下の「案件」から受注しよう。</div>';
-  $('town-body').innerHTML = townScene() + `<div class="town-grid"><div>${alerts.join('')}<div class="panel"><div class="panel-title">いまの会社</div><div class="goal-row"><span>資金</span><span data-live="money">${yen(S.money)}</span></div><div class="goal-row"><span>評判</span><span data-live="rep">${S.rep} / 100</span></div><div class="goal-row"><span>社員</span><span data-live="staff">${S.employees.length} / ${levelInfo().slots}人</span></div><div class="goal-row"><span>会社Lv</span><span>Lv.${S.level}</span></div></div>${levelPanel()}</div><div class="panel"><div class="panel-title">進行中の案件</div>${projects}</div></div>`;
+  $('town-body').innerHTML = townScene() + `<div class="town-grid"><div>${alerts.join('')}<div class="panel"><div class="panel-title">いまの会社</div><div class="goal-row"><span>資金</span><span data-live="money">${yen(S.money)}</span></div><div class="goal-row"><span>評判</span><span data-live="rep">${S.rep} / 100</span></div><div class="goal-row"><span>社員</span><span data-live="staff">${S.employees.length} / ${levelInfo().slots}人</span></div><div class="goal-row"><span>社員満足度（平均）</span><span>${averageEmployeeSatisfaction()} / 100</span></div><div class="goal-row"><span>会社Lv</span><span>Lv.${S.level}</span></div></div>${levelPanel()}</div><div class="panel"><div class="panel-title">進行中の案件</div>${projects}</div></div>`;
 }
 
 function renderHome() {
@@ -664,6 +672,9 @@ function renderEmployees() {
   const salesButton = (e) => e.sales
     ? `<button class="btn-small" data-act="toggle-sales" data-id="${e.id}">営業担当を外す</button>`
     : `<button class="btn-small" data-act="toggle-sales" data-id="${e.id}">営業担当にする</button>`;
+  const fireButton = (e) => S.employees.length <= 1
+    ? '<span class="small muted">社員は最低1人必要です</span>'
+    : `<button class="btn-small" data-act="arm-fire-employee" data-id="${e.id}">解雇する（退職金 ${yen(e.salary * EMPLOYEE_SEVERANCE_MONTHS)}）</button>`;
   const viewButton = (view) => `<button class="btn-small" data-act="employee-view" data-view="${view}">${view === 'sales' ? '営業担当を見る' : '社員一覧に戻る'}</button>`;
   if (S.employeeView === 'sales') {
     const sales = bySkill(S.employees.filter((e) => e.sales)).map((e) => {
@@ -671,25 +682,31 @@ function renderEmployees() {
       const status = resting ? `営業休止中（あと${e.salesCooldownUntil - S.day}日）` : '営業活動中';
       return `<div class="employee-card">
         <div class="employee-card-head" style="background:${skillColor(e.skill)}"><div class="employee-avatar">${avatar(e.skill, e.name + 'のドット絵')}</div><div><div class="small muted">社員 / 営業担当</div><strong class="employee-name">${e.name}</strong><span class="employee-skill">${SKILLS[e.skill]}</span></div></div>
-        ${isAbsent(e) ? employeeStatusMarkup(e) : `<div class="employee-status">${status}</div>`}<div class="employee-info"><span>営業力</span><strong>${e.salesSkill}/100</strong></div>
+        ${isAbsent(e) ? employeeStatusMarkup(e) : `<div class="employee-status">${status}</div>`}${employeeSatisfactionMarkup(e)}<div class="employee-info"><span>営業力</span><strong>${e.salesSkill}/100</strong></div>
         <div class="small">${employeeStats(e)}</div><div class="small muted">案件獲得率 ${salesSuccessRate(e.salesSkill)}%（基礎30%） / 獲得後1〜3か月休止</div>
-        <div class="employee-actions">${salesButton(e)}</div></div>`;
+        <div class="employee-actions">${salesButton(e)}${fireButton(e)}</div></div>`;
     }).join('') || '<div class="card muted">営業担当がいません。社員一覧から担当者を設定してください。</div>';
     $('employees-body').innerHTML = `<div class="row"><h2>社員一覧 <span class="muted small">${S.employees.length} / ${slots}人</span></h2><div>${viewButton('staff')} <button class="btn-small" data-go="upgrades">社員強化</button></div></div>
+      <div class="employee-satisfaction-summary">全社員の平均満足度 <strong>${averageEmployeeSatisfaction()} / 100</strong></div>
       <p class="small muted legend">営業担当は毎月、基礎30%に営業力を加味した確率で案件を獲得します。営業力は将来データベースの値に差し替えられます。</p>
+      <p class="small muted legend">給与支払いで上がり、担当中は仕事の負荷で下がります。待機中は回復し、イベントでも上下します。60未満では作業効率が下がり、20未満ではデータベースの退職希望イベントが発生しやすくなり、選択に応じて退職リスクが変わります。</p>
+      <p class="small muted legend">解雇には月給の${EMPLOYEE_SEVERANCE_MONTHS}か月分の退職金が必要です。解雇すると評判が${EMPLOYEE_FIRE_REPUTATION_PENALTY}下がります。</p>
       <h3>営業担当</h3><div class="employee-grid">${sales}</div>`;
     return;
   }
   const cards = bySkill(S.employees.filter((e) => !e.sales)).map((e) => {
     return `<div class="employee-card">
       <div class="employee-card-head" style="background:${skillColor(e.skill)}"><div class="employee-avatar">${avatar(e.skill, e.name + 'のドット絵')}</div><div><div class="small muted">社員</div><strong class="employee-name">${e.name}</strong><span class="employee-skill">${SKILLS[e.skill]}</span></div></div>
-      <div class="small employee-help">${SKILL_HELP[e.skill]}</div>${employeeStatusMarkup(e)}
+      <div class="small employee-help">${SKILL_HELP[e.skill]}</div>${employeeStatusMarkup(e)}${employeeSatisfactionMarkup(e)}
       <div class="employee-info"><span>月給</span><strong>${yen(e.salary)}</strong></div><div class="small">営業力 ${e.salesSkill}/100</div><div class="small">${employeeStats(e)}</div>
-      <div class="employee-actions">${salesButton(e)}</div></div>`;
+      <div class="employee-actions">${salesButton(e)}${fireButton(e)}</div></div>`;
   }).join('') || '<div class="card muted">営業担当以外の社員がいません。営業担当を見るボタンから確認できます。</div>';
   $('employees-body').innerHTML = `<div class="row"><h2>社員一覧 <span class="muted small">${S.employees.length} / ${slots}人</span></h2><div>${viewButton('sales')} <button class="btn-small" data-go="upgrades">社員強化</button></div></div>
+    <div class="employee-satisfaction-summary">全社員の平均満足度 <strong>${averageEmployeeSatisfaction()} / 100</strong></div>
     ${skillLegend()}
-    <p class="small muted legend">社員のスキルや担当案件を確認できます。営業担当は毎月、基礎30%に営業力を加味した確率で1〜3件の案件を獲得し、獲得後1〜3か月休みます。</p><div class="employee-grid">${cards}</div>`;
+    <p class="small muted legend">社員のスキルや担当案件を確認できます。営業担当は毎月、基礎30%に営業力を加味した確率で1〜3件の案件を獲得し、獲得後1〜3か月休みます。</p>
+    <p class="small muted legend">給与支払いで上がり、担当中は仕事の負荷で下がります。待機中は回復し、イベントでも上下します。60未満では作業効率が下がり、20未満ではデータベースの退職希望イベントが発生しやすくなり、選択に応じて退職リスクが変わります。</p>
+    <p class="small muted legend">解雇には月給の${EMPLOYEE_SEVERANCE_MONTHS}か月分の退職金が必要です。解雇すると評判が${EMPLOYEE_FIRE_REPUTATION_PENALTY}下がります。</p><div class="employee-grid">${cards}</div>`;
 }
 
 // ----- 採用イベント -----
@@ -926,7 +943,30 @@ function renderModal() {
   const showMission = S && S.missionsOpen && !p && screenMode === null;
   const showRecruitment = S && S.recruiting && S.recruitStage === 'confirm' && !p && screenMode === null;
   const showDebugEvent = debugEventSelecting && S && !p && !S.recruiting && screenMode === null;
-  $('modal').classList.toggle('hidden', (!p && !showMission && !showRecruitment && !showDebugEvent) || screenMode !== null);
+  const showEmployeeFire = S && S.employeeFiringArmed !== null && !p && !S.recruiting && screenMode === null;
+  $('modal').classList.toggle('hidden', (!p && !showMission && !showRecruitment && !showDebugEvent && !showEmployeeFire) || screenMode !== null);
+  if (showEmployeeFire) {
+    const employee = empById(S.employeeFiringArmed);
+    if (!employee) {
+      S.employeeFiringArmed = null;
+      $('modal').classList.add('hidden');
+      return;
+    }
+    const severance = employee.salary * EMPLOYEE_SEVERANCE_MONTHS;
+    const canFire = S.employees.length > 1 && S.money >= severance;
+    body.innerHTML = `<div class="modal-head"><span class="badge badge-high">解雇確認</span></div>
+      <h3>${esc(employee.name)}を解雇しますか？</h3>
+      <p class="muted">退職金として資金を${yen(severance)}支払います。</p>
+      <p class="small ${canFire ? 'muted' : 'neg'}">現在の資金 ${yen(S.money)} / 評判 -${EMPLOYEE_FIRE_REPUTATION_PENALTY}</p>
+      ${S.employees.length <= 1 ? '<p class="small neg">社員が一人以下になるため解雇できません。</p>' : (S.money < severance ? '<p class="small neg">退職金が不足しているため解雇できません。</p>' : '')}
+      <button class="choice has-letter" data-act="confirm-fire-employee" data-id="${employee.id}" ${canFire ? '' : 'disabled'}>
+        <span class="ch-letter">1</span><span class="ch-body"><strong>解雇する</strong></span>
+      </button>
+      <button class="choice has-letter is-hide" data-act="cancel-fire-employee">
+        <span class="ch-letter">2</span><span class="ch-body"><strong>キャンセル</strong></span>
+      </button>`;
+    return;
+  }
   if (showMission) {
     $('modal-body').innerHTML = `<div class="modal-head"><span class="badge badge-low">ミッション</span><button class="btn-small" data-act="toggle-missions">閉じる</button></div>${missionPanel()}`;
     return;
@@ -1073,16 +1113,16 @@ function showEnd() {
   const goals = goalList();
   const years = (S.day / 365).toFixed(1);
   let title, lead;
-  let rank = 'C';
+  let rank = o.type === 'timeout' ? 'E' : 'C';
   if (o.type === 'clear') {
     rank = getClearRank();
     title = `ゲームクリア！ 評価 ${rank}`;
     lead = `${years}年で、すべての目標を達成した。会社は大きく成長した。`;
   }
   else if (o.type === 'bankrupt') { title = 'ゲームオーバー'; lead = `${dateLabel(o.day)}、資金が尽きて、会社を続けられなくなった。`; }
-  else if (o.type === 'retire') {
-    title = '15年経過';
-    lead = '15年が経過したため、社長を引退した。';
+  else if (o.type === 'timeout') {
+    title = '5年経過';
+    lead = '5年以内にすべての目標を達成できなかったため、評価は最低ランクです。';
   }
   const t = S.tally;
   const avg = goals.reduce((sum, goal) => sum + goal.ratio, 0) / goals.length;
@@ -1262,6 +1302,22 @@ document.addEventListener('click', (ev) => {
   else if (a === 'employee-view') { S.employeeView = el.dataset.view; render(); }
   else if (a === 'assign') { toggleAssign(Number(el.dataset.job), Number(el.dataset.emp)); render(); }
   else if (a === 'toggle-sales') { toggleSales(Number(el.dataset.id)); render(); }
+  else if (a === 'arm-fire-employee') {
+    if (S.employees.length <= 1) {
+      toast('社員が一人以下になるため解雇できません', 'bad');
+      render();
+      return;
+    }
+    S.employeeFiringArmed = Number(el.dataset.id);
+    render();
+  }
+  else if (a === 'cancel-fire-employee') {
+    S.employeeFiringArmed = null;
+    render();
+  }
+  else if (a === 'confirm-fire-employee') {
+    done(fireEmployee(Number(el.dataset.id)));
+  }
   else if (a === 'accept') {
     const r = acceptOffer(Number(el.dataset.id));
     done(r);
@@ -1394,6 +1450,31 @@ document.addEventListener('keydown', (ev) => {
   ) {
     return;
   }
+  if (ev.code === 'Escape') {
+    ev.preventDefault();
+    if (S && S.employeeFiringArmed !== null) {
+      S.employeeFiringArmed = null;
+      render();
+      return;
+    }
+    if (debugEventSelecting) {
+      debugEventSelecting = false;
+      renderModal();
+      return;
+    }
+    if (S?.recruitSelectingJob) {
+      S.recruitSelectingJob = false;
+      renderModal();
+      return;
+    }
+    if (S?.missionsOpen) {
+      S.missionsOpen = false;
+      renderModal();
+      return;
+    }
+    showPage('town');
+    return;
+  }
   if (S?.recruiting && S.recruitStage === 'confirm') {
     if (ev.code === 'Digit1') {
       ev.preventDefault();
@@ -1437,7 +1518,7 @@ document.addEventListener('keydown', (ev) => {
   }
   if (ev.code === 'Digit1') {
     ev.preventDefault();
-    showPage('town');
+    showPage('home');
     return;
   }
   if (ev.code === 'Digit2') {
